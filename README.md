@@ -1,9 +1,13 @@
-# records — durable work records for pi
+# pi-mem — durable memory across compaction for pi
 
-A pi extension that turns context compaction into a durable, greppable artifact. Instead of letting a
-summary vanish into the session, every compaction writes a Markdown record under the project's
-`records/YYYY/MM/DD/` and appends a line to `records/INDEX.md`, which the agent is told about at the
-start of each run.
+An unofficial extension for the [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+that turns context compaction into a durable, greppable artifact. Instead of letting a summary vanish
+into the session, every compaction writes a Markdown record under the project's `records/YYYY/MM/DD/`
+and appends a line to `records/INDEX.md`, which the agent is told about at the start of each run. The
+agent can then grep its own past work rather than rediscovering it.
+
+> The repository is named `pi-mem` for what it is *for*; the code, the config file, and the record
+> directory all say `records` for what it *stores*. Same thing.
 
 It also drives *when* compaction happens, because pi's own trigger fires only once the window is
 nearly full:
@@ -16,18 +20,28 @@ The cadence is absolute because it tracks how much work has piled up, which is a
 conversation. The force floor derives from `reserveTokens` because it is pure window pressure. That
 split is deliberate: a 1M-token model should still be asked at 200k.
 
-## Install on a new machine
+## Requirements
+
+Pi `0.84.2`. The extension uses host APIs that carry no stability guarantee — the
+`session_before_compact` and `agent_settled` events, `ctx.compact()`, and `ctx.getContextUsage()` —
+so a pi upgrade can break it. If it stops loading after an upgrade, that is the first place to look.
+
+## Install
 
 ```sh
-git clone <this-repo> ~/.pi/agent/extensions/records
-~/.pi/agent/extensions/records/install.sh
+git clone https://github.com/BoJiang03/pi-mem.git ~/.pi/agent/extensions/pi-mem
+~/.pi/agent/extensions/pi-mem/install.sh
 ```
 
 Pi discovers `<agent-dir>/extensions/*/index.ts` automatically — there is no build step and no
-registration. If `PI_CODING_AGENT_DIR` is set, clone under that directory instead of `~/.pi/agent`.
+registration, and the directory name is arbitrary. If `PI_CODING_AGENT_DIR` is set, clone under that
+directory instead of `~/.pi/agent`.
 
 Add `--dev` to also `npm install` the dev dependencies, which are needed only for
 `npm run typecheck` and `npm test`.
+
+Re-run `install.sh` after upgrading or relocating pi; it is idempotent and never overwrites an
+existing config.
 
 ## What is and is not portable
 
@@ -83,3 +97,10 @@ npm test
 
 Logic worth testing lives in `pure.ts` as pure functions, with `pure.test.ts` alongside it.
 `index.ts` holds the I/O and the event handlers.
+
+`tsconfig.json` is generated and gitignored because its `paths` must point at the local pi install;
+edit `tsconfig.template.json` instead.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
