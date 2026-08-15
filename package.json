@@ -1,0 +1,15 @@
+{
+  "name": "pi-records-extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test pure.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "tsx": "latest",
+    "typescript": "^5.9.3",
+    "yaml": "latest"
+  }
+}

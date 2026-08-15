@@ -1,0 +1,7 @@
+{
+  "recordDir": "records",
+  "confirmThreshold": true,
+  "askAtTokens": 200000,
+  "askEveryTokens": 100000,
+  "agentSelfSummary": true
+}
