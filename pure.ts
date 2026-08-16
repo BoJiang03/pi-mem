@@ -50,8 +50,8 @@ export interface Metadata {
 	files: string[];
 }
 
-/** Both markers are accepted so records written before the mem rename still parse. */
-const META_RE = /\n?<!--\s*(?:MEM|RECORD)_META\s*\n([\s\S]*?)\n(?:MEM|RECORD)_META\s*-->\s*$/;
+/** The trailing metadata block a record ends with. */
+const META_RE = /\n?<!--\s*MEM_META\s*\n([\s\S]*?)\nMEM_META\s*-->\s*$/;
 
 /** Splits a model-written record into its prose body and its trailing metadata block. */
 export function parseSummary(raw: string): { body: string; metadata: Metadata } {

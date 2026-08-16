@@ -28,16 +28,6 @@ echo "wrote tsconfig.json -> $pkg"
 
 if [ -f "$agent_dir/mem.json" ]; then
 	echo "kept existing $agent_dir/mem.json"
-elif [ -f "$agent_dir/records.json" ]; then
-	# Pre-rename config. The extension reads it as a fallback too, so the move itself is tidying.
-	mv "$agent_dir/records.json" "$agent_dir/mem.json"
-	echo "renamed $agent_dir/records.json -> mem.json"
-	# But an explicit "records" -- the old default, written out verbatim -- would pin the directory
-	# name and permanently suppress the automatic records/ -> mem/ migration. Any other value is a
-	# real choice and is left alone; the legacy key keeps working.
-	sed -i.bak 's/"recordDir"[[:space:]]*:[[:space:]]*"records"/"memDir": "mem"/' "$agent_dir/mem.json" 2>/dev/null ||
-		sed -i '' 's/"recordDir"[[:space:]]*:[[:space:]]*"records"/"memDir": "mem"/' "$agent_dir/mem.json"
-	rm -f "$agent_dir/mem.json.bak"
 else
 	mkdir -p "$agent_dir"
 	cp "$here/mem.example.json" "$agent_dir/mem.json"

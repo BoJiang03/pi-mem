@@ -115,15 +115,11 @@ test("index entry lines exclude the header prose", () => {
 	assert.deepEqual(indexEntryLines(index), ["2026-08-15T12:00:00.000Z [a](2026/08/15/1_a.md) — s — files: x"]);
 });
 
-test("both the current and the pre-rename metadata markers parse", () => {
-	const meta = '{"title":"t","summary":"s","files":["a.ts"]}';
-	const withMarker = (name: string) => `## Intent\nDid the thing.\n\n<!-- ${name}\n${meta}\n${name} -->`;
-
-	for (const name of ["MEM_META", "RECORD_META"]) {
-		const parsed = parseSummary(withMarker(name));
-		assert.equal(parsed.body, "## Intent\nDid the thing.", `${name}: the block is stripped from the body`);
-		assert.deepEqual(parsed.metadata, { title: "t", summary: "s", files: ["a.ts"] }, `${name}: metadata is read`);
-	}
+test("the metadata block is read and stripped from the body", () => {
+	const raw = '## Intent\nDid the thing.\n\n<!-- MEM_META\n{"title":"t","summary":"s","files":["a.ts","a.ts"," "]}\nMEM_META -->';
+	const parsed = parseSummary(raw);
+	assert.equal(parsed.body, "## Intent\nDid the thing.");
+	assert.deepEqual(parsed.metadata, { title: "t", summary: "s", files: ["a.ts"] }, "duplicate and blank files are dropped");
 });
 
 test("a record without a usable metadata block falls back to derivation", () => {
@@ -136,7 +132,7 @@ test("a record without a usable metadata block falls back to derivation", () => 
 });
 
 test("path traversal and absolute paths are rejected", () => {
-	const root = "/tmp/project/records";
+	const root = "/tmp/project/mem";
 	assert.equal(isSafeRecordPath(root, "2026/08/15/1_ok.md"), true);
 	assert.equal(isSafeRecordPath(root, "../secrets.md"), false);
 	assert.equal(isSafeRecordPath(root, "/etc/passwd.md"), false);

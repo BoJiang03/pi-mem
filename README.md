@@ -80,17 +80,6 @@ they match the defaults, so that changing a default later cannot silently change
 
 Memory is per-project, under each project's own cwd — nothing needs migrating between machines.
 
-## Upgrading from the `records` layout
-
-Earlier versions called all of this `records`. Nothing needs to be moved by hand:
-
-- `records/` is renamed to `mem/` on the next session start, per project. If `mem/` already exists,
-  neither directory is touched and a warning says which one is in use. An explicit `memDir` is never
-  overridden.
-- `records.json` is still read if `mem.json` is absent, and `recordDir` is still accepted as a key.
-  `install.sh` renames the agent-level file for tidiness.
-- Records carrying the old `RECORD_META` trailer still parse; new ones write `MEM_META`.
-
 ## Related pi settings
 
 `compaction.keepRecentTokens` in `<agent-dir>/settings.json` controls how much recent conversation

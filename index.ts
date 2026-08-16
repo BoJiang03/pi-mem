@@ -70,9 +70,6 @@ const DEFAULT_CONFIG: Config = {
 	agentSelfSummary: true,
 };
 
-/** Pre-rename names, still read so an existing install keeps working untouched. */
-const LEGACY_MEM_DIR = "records";
-const LEGACY_CONFIG_NAME = "records.json";
 const DECISION_LOG_MAX_BYTES = 2 * 1024 * 1024;
 const GREP_TIMEOUT_MS = 15_000;
 const INDEX_HINT_ENTRIES = 25;
@@ -119,8 +116,7 @@ function overlayConfig(base: Config, value: unknown): Config {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return base;
 	const input = value as Record<string, unknown>;
 	return {
-		// recordDir is the pre-rename spelling; an existing config keeps working without being edited.
-		memDir: firstNonEmptyString(input.memDir, input.recordDir) ?? base.memDir,
+		memDir: typeof input.memDir === "string" && input.memDir.trim() ? input.memDir : base.memDir,
 		confirmThreshold: typeof input.confirmThreshold === "boolean" ? input.confirmThreshold : base.confirmThreshold,
 		askAtTokens:
 			typeof input.askAtTokens === "number" && Number.isFinite(input.askAtTokens) && input.askAtTokens > 0 ? input.askAtTokens : base.askAtTokens,
@@ -140,67 +136,23 @@ function overlayConfig(base: Config, value: unknown): Config {
 	};
 }
 
-function firstNonEmptyString(...values: unknown[]): string | undefined {
-	for (const value of values) if (typeof value === "string" && value.trim()) return value;
-	return undefined;
-}
-
 function readConfigFile(path: string): Promise<unknown> {
 	return readFile(path, "utf8")
 		.then((text) => JSON.parse(text) as unknown)
 		.catch(() => undefined);
 }
 
-/** Reads mem.json, falling back to the pre-rename records.json in the same directory. */
-async function readConfigIn(dir: string): Promise<unknown> {
-	return (await readConfigFile(join(dir, "mem.json"))) ?? (await readConfigFile(join(dir, LEGACY_CONFIG_NAME)));
-}
-
 /** Defaults < global (~/.pi/agent/mem.json) < project (<cwd>/.pi/mem.json, trusted projects only). */
 async function loadConfig(cwd: string, trusted: boolean): Promise<Config> {
-	const global = overlayConfig({ ...DEFAULT_CONFIG }, await readConfigIn(getAgentDir()));
+	const global = overlayConfig({ ...DEFAULT_CONFIG }, await readConfigFile(join(getAgentDir(), "mem.json")));
 	if (!trusted) return global;
-	return overlayConfig(global, await readConfigIn(join(cwd, CONFIG_DIR_NAME)));
+	return overlayConfig(global, await readConfigFile(join(cwd, CONFIG_DIR_NAME, "mem.json")));
 }
 
 function memRoot(cwd: string, config: Config): string {
 	return resolve(cwd, config.memDir);
 }
 
-async function pathExists(path: string): Promise<boolean> {
-	try {
-		await lstat(path);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Moves a pre-rename records/ directory to mem/, once. Only the default layout is touched: an explicit
- * memDir is the user's own choice, and an existing mem/ is never merged into. On failure the records
- * stay where they are and the warning says so, because silently starting a second directory would
- * strand every earlier record.
- */
-async function migrateLegacyMemDir(ctx: ExtensionContext, config: Config): Promise<void> {
-	if (config.memDir !== DEFAULT_CONFIG.memDir) return;
-	const target = memRoot(ctx.cwd, config);
-	const legacy = resolve(ctx.cwd, LEGACY_MEM_DIR);
-	if (target === legacy || !(await pathExists(legacy))) return;
-	const warn = (text: string) => {
-		if (ctx.hasUI) ctx.ui.notify(text, "warning");
-	};
-	if (await pathExists(target)) {
-		warn(`Both ${LEGACY_MEM_DIR}/ and ${config.memDir}/ exist; using ${config.memDir}/ and leaving ${LEGACY_MEM_DIR}/ untouched.`);
-		return;
-	}
-	try {
-		await rename(legacy, target);
-		if (ctx.hasUI) ctx.ui.notify(`Renamed ${LEGACY_MEM_DIR}/ to ${config.memDir}/.`, "info");
-	} catch (error) {
-		warn(`Could not rename ${LEGACY_MEM_DIR}/ to ${config.memDir}/, so earlier records are not visible: ${errorMessage(error)}`);
-	}
-}
 
 function activeTools(pi: ExtensionAPI): Tool[] {
 	const names = new Set(pi.getActiveTools());
@@ -522,8 +474,6 @@ export default function memExtension(pi: ExtensionAPI): void {
 		if (indexAnnounced) return;
 		indexAnnounced = true;
 		const config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
-		// Runs before any other handler can touch the directory, since the agent must start before it compacts.
-		await migrateLegacyMemDir(ctx, config);
 		const hint = await indexHint(memRoot(ctx.cwd, config));
 		if (!hint) return;
 		return { message: { customType: "mem-index", content: hint, display: false } };
