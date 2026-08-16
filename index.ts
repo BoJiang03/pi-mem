@@ -474,6 +474,10 @@ export default function memExtension(pi: ExtensionAPI): void {
 					}
 				}
 			}
+			// pi clears its run flag before awaiting this handler, so a prompt arriving while the confirm
+			// is open can start a new run. compact() aborts first, which would kill it. The next settle
+			// re-offers, so skipping costs nothing.
+			if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
 			ctx.compact();
 		} finally {
 			offering = false;
