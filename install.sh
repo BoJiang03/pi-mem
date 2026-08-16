@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Sets up the records extension after a clone. Idempotent: safe to re-run after a pi upgrade.
+# Sets up the pi-mem extension after a clone. Idempotent: safe to re-run after a pi upgrade.
 #
 # The extension itself needs no installation — pi discovers <agent-dir>/extensions/*/index.ts and
 # injects its own packages at runtime. This script only produces the two things a clone cannot
@@ -26,12 +26,22 @@ fi
 sed "s#__PI_PKG__#$pkg#g" "$here/tsconfig.template.json" > "$here/tsconfig.json"
 echo "wrote tsconfig.json -> $pkg"
 
-if [ -f "$agent_dir/records.json" ]; then
-	echo "kept existing $agent_dir/records.json"
+if [ -f "$agent_dir/mem.json" ]; then
+	echo "kept existing $agent_dir/mem.json"
+elif [ -f "$agent_dir/records.json" ]; then
+	# Pre-rename config. The extension reads it as a fallback too, so the move itself is tidying.
+	mv "$agent_dir/records.json" "$agent_dir/mem.json"
+	echo "renamed $agent_dir/records.json -> mem.json"
+	# But an explicit "records" -- the old default, written out verbatim -- would pin the directory
+	# name and permanently suppress the automatic records/ -> mem/ migration. Any other value is a
+	# real choice and is left alone; the legacy key keeps working.
+	sed -i.bak 's/"recordDir"[[:space:]]*:[[:space:]]*"records"/"memDir": "mem"/' "$agent_dir/mem.json" 2>/dev/null ||
+		sed -i '' 's/"recordDir"[[:space:]]*:[[:space:]]*"records"/"memDir": "mem"/' "$agent_dir/mem.json"
+	rm -f "$agent_dir/mem.json.bak"
 else
 	mkdir -p "$agent_dir"
-	cp "$here/records.example.json" "$agent_dir/records.json"
-	echo "wrote $agent_dir/records.json"
+	cp "$here/mem.example.json" "$agent_dir/mem.json"
+	echo "wrote $agent_dir/mem.json"
 fi
 
 # Dev dependencies are only needed to run `npm run typecheck` and `npm test`.

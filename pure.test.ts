@@ -12,6 +12,7 @@ import {
 	isSafeRecordPath,
 	nextSequence,
 	parseRipgrepHits,
+	parseSummary,
 	shouldAsk,
 	slugifyTitle,
 	sortGrepHits,
@@ -112,6 +113,26 @@ test("ripgrep output parses into dated hits and keeps colons in matched text", (
 test("index entry lines exclude the header prose", () => {
 	const index = "# Work Record Index\n\n> Retrieval rule: read the earliest record.\n\nRecords are appended oldest to newest.\n\n2026-08-15T12:00:00.000Z [a](2026/08/15/1_a.md) — s — files: x\n";
 	assert.deepEqual(indexEntryLines(index), ["2026-08-15T12:00:00.000Z [a](2026/08/15/1_a.md) — s — files: x"]);
+});
+
+test("both the current and the pre-rename metadata markers parse", () => {
+	const meta = '{"title":"t","summary":"s","files":["a.ts"]}';
+	const withMarker = (name: string) => `## Intent\nDid the thing.\n\n<!-- ${name}\n${meta}\n${name} -->`;
+
+	for (const name of ["MEM_META", "RECORD_META"]) {
+		const parsed = parseSummary(withMarker(name));
+		assert.equal(parsed.body, "## Intent\nDid the thing.", `${name}: the block is stripped from the body`);
+		assert.deepEqual(parsed.metadata, { title: "t", summary: "s", files: ["a.ts"] }, `${name}: metadata is read`);
+	}
+});
+
+test("a record without a usable metadata block falls back to derivation", () => {
+	assert.deepEqual(parseSummary("## Intent\nDid the thing.").metadata, { title: "Did the thing.", summary: "Did the thing.", files: [] });
+	// A corrupt JSON payload must not lose the body that surrounds it.
+	const broken = parseSummary("## Intent\nDid the thing.\n\n<!-- MEM_META\n{not json\nMEM_META -->");
+	assert.equal(broken.body, "## Intent\nDid the thing.");
+	assert.equal(broken.metadata.title, "Did the thing.");
+	assert.throws(() => parseSummary("   "), /Summary body was empty/);
 });
 
 test("path traversal and absolute paths are rejected", () => {

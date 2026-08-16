@@ -1,5 +1,5 @@
 {
-  "recordDir": "records",
+  "memDir": "mem",
   "confirmThreshold": true,
   "askAtTokens": 200000,
   "askEveryTokens": 100000,

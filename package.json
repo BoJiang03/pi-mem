@@ -1,5 +1,5 @@
 {
-  "name": "pi-records-extension",
+  "name": "pi-mem",
   "private": true,
   "type": "module",
   "scripts": {

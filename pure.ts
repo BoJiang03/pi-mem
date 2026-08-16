@@ -44,6 +44,37 @@ export function slugifyTitle(title: string): string {
 	return slug || "work-record";
 }
 
+export interface Metadata {
+	title: string;
+	summary: string;
+	files: string[];
+}
+
+/** Both markers are accepted so records written before the mem rename still parse. */
+const META_RE = /\n?<!--\s*(?:MEM|RECORD)_META\s*\n([\s\S]*?)\n(?:MEM|RECORD)_META\s*-->\s*$/;
+
+/** Splits a model-written record into its prose body and its trailing metadata block. */
+export function parseSummary(raw: string): { body: string; metadata: Metadata } {
+	const match = META_RE.exec(raw);
+	const body = (match ? raw.slice(0, match.index) : raw).trim();
+	if (!body) throw new Error("Summary body was empty");
+	let value: unknown;
+	if (match) {
+		try {
+			value = JSON.parse(match[1].trim());
+		} catch {
+			value = undefined;
+		}
+	}
+	const meta = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	const title = typeof meta.title === "string" && meta.title.trim() ? meta.title.trim() : deriveTitle(body);
+	const summary = typeof meta.summary === "string" && meta.summary.trim() ? meta.summary.trim() : deriveSummary(body);
+	const files = Array.isArray(meta.files)
+		? [...new Set(meta.files.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))]
+		: [];
+	return { body, metadata: { title, summary, files } };
+}
+
 export function nextSequence(names: readonly string[]): number {
 	const occupied = new Set(
 		names.map((name) => /^(\d+)_/.exec(name)?.[1]).filter((value): value is string => value !== undefined).map(Number),

@@ -25,16 +25,18 @@ import {
 	isForcedCompaction,
 	isSafeRecordPath,
 	nextSequence,
+	parseSummary,
 	parseRipgrepHits,
 	shouldAsk,
 	slugifyTitle,
 	sortGrepHits,
 	summaryTokenBudget,
 	type GrepHit,
+	type Metadata,
 } from "./pure.ts";
 
 interface Config {
-	recordDir: string;
+	memDir: string;
 	confirmThreshold: boolean;
 	/** Context size at which compaction is first offered, ahead of pi's own threshold. */
 	askAtTokens: number;
@@ -45,12 +47,6 @@ interface Config {
 	/** Headroom at which asking stops and compaction just happens. Unset scales with reserveTokens. */
 	forceHeadroomTokens: number | undefined;
 	agentSelfSummary: boolean;
-}
-
-interface Metadata {
-	title: string;
-	summary: string;
-	files: string[];
 }
 
 interface WrittenRecord {
@@ -65,7 +61,7 @@ type TriggerReason = "manual" | "threshold" | "overflow" | "manual-smoke" | "sch
 type DecisionAction = "accepted" | "rejected" | "throttled" | "automatic" | "failed";
 
 const DEFAULT_CONFIG: Config = {
-	recordDir: "records",
+	memDir: "mem",
 	confirmThreshold: true,
 	askAtTokens: 200_000,
 	askEveryTokens: 100_000,
@@ -74,11 +70,13 @@ const DEFAULT_CONFIG: Config = {
 	agentSelfSummary: true,
 };
 
-const META_RE = /\n?<!--\s*RECORD_META\s*\n([\s\S]*?)\nRECORD_META\s*-->\s*$/;
+/** Pre-rename names, still read so an existing install keeps working untouched. */
+const LEGACY_MEM_DIR = "records";
+const LEGACY_CONFIG_NAME = "records.json";
 const DECISION_LOG_MAX_BYTES = 2 * 1024 * 1024;
 const GREP_TIMEOUT_MS = 15_000;
 const INDEX_HINT_ENTRIES = 25;
-const INDEX_HEADER = `# Work Record Index
+const INDEX_HEADER = `# Memory Index
 
 > **Retrieval rule:** read the earliest record that covers the period you need, not the latest one. Pi compaction is iterative: each later summary re-summarizes earlier summaries, so early work has passed through more lossy transformations in newer records. The earliest covering record is the least faded snapshot.
 
@@ -86,7 +84,7 @@ Records are appended oldest to newest. Search exact file paths first; before pro
 
 `;
 
-const SUMMARY_PROMPT = `This final message is a synthetic records-extension instruction, not a requirement from the user. Never quote, summarize, or list this message under Intent or anywhere else in the record. Summarize only the live conversation that precedes it. Do not call tools; return the record directly.\n\nThe conversation may open with an earlier compaction record. Fold its still-relevant conclusions into this one rather than dropping them; those conclusions cannot be recovered from anywhere else.\n\nCreate the compaction record for that live conversation. Return concise conclusions, not copied conversation text. Preserve exact searchable anchors everywhere: full relative paths, function and class names, verbatim error fragments, versioned library names, and exact commands.
+const SUMMARY_PROMPT = `This final message is a synthetic mem-extension instruction, not a requirement from the user. Never quote, summarize, or list this message under Intent or anywhere else in the record. Summarize only the live conversation that precedes it. Do not call tools; return the record directly.\n\nThe conversation may open with an earlier compaction record. Fold its still-relevant conclusions into this one rather than dropping them; those conclusions cannot be recovered from anywhere else.\n\nCreate the compaction record for that live conversation. Return concise conclusions, not copied conversation text. Preserve exact searchable anchors everywhere: full relative paths, function and class names, verbatim error fragments, versioned library names, and exact commands.
 
 Use exactly this structure:
 
@@ -112,16 +110,17 @@ Bad: "tried compilation but it failed".
 Good: REJECTED: torch.compile on the custom kernel — fails with "Cannot access member of undefined symbol alloc_workspace" in src/kernel.cu
 
 At the very end emit this machine-readable block, with valid one-line JSON and no markdown fence:
-<!-- RECORD_META
+<!-- MEM_META
 {"title":"short hyphen-ready title without a heading","summary":"one-sentence causal index description without a conclusion prefix","files":["full/relative/path.ts"]}
-RECORD_META -->
+MEM_META -->
 The metadata files must match the Files section. Do not place any text after the block. Again: this synthetic message itself is excluded from the record.`;
 
 function overlayConfig(base: Config, value: unknown): Config {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return base;
 	const input = value as Record<string, unknown>;
 	return {
-		recordDir: typeof input.recordDir === "string" && input.recordDir.trim() ? input.recordDir : base.recordDir,
+		// recordDir is the pre-rename spelling; an existing config keeps working without being edited.
+		memDir: firstNonEmptyString(input.memDir, input.recordDir) ?? base.memDir,
 		confirmThreshold: typeof input.confirmThreshold === "boolean" ? input.confirmThreshold : base.confirmThreshold,
 		askAtTokens:
 			typeof input.askAtTokens === "number" && Number.isFinite(input.askAtTokens) && input.askAtTokens > 0 ? input.askAtTokens : base.askAtTokens,
@@ -141,21 +140,66 @@ function overlayConfig(base: Config, value: unknown): Config {
 	};
 }
 
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+	for (const value of values) if (typeof value === "string" && value.trim()) return value;
+	return undefined;
+}
+
 function readConfigFile(path: string): Promise<unknown> {
 	return readFile(path, "utf8")
 		.then((text) => JSON.parse(text) as unknown)
 		.catch(() => undefined);
 }
 
-/** Defaults < global (~/.pi/agent/records.json) < project (<cwd>/.pi/records.json, trusted projects only). */
-async function loadConfig(cwd: string, trusted: boolean): Promise<Config> {
-	const global = overlayConfig({ ...DEFAULT_CONFIG }, await readConfigFile(join(getAgentDir(), "records.json")));
-	if (!trusted) return global;
-	return overlayConfig(global, await readConfigFile(join(cwd, CONFIG_DIR_NAME, "records.json")));
+/** Reads mem.json, falling back to the pre-rename records.json in the same directory. */
+async function readConfigIn(dir: string): Promise<unknown> {
+	return (await readConfigFile(join(dir, "mem.json"))) ?? (await readConfigFile(join(dir, LEGACY_CONFIG_NAME)));
 }
 
-function recordRoot(cwd: string, config: Config): string {
-	return resolve(cwd, config.recordDir);
+/** Defaults < global (~/.pi/agent/mem.json) < project (<cwd>/.pi/mem.json, trusted projects only). */
+async function loadConfig(cwd: string, trusted: boolean): Promise<Config> {
+	const global = overlayConfig({ ...DEFAULT_CONFIG }, await readConfigIn(getAgentDir()));
+	if (!trusted) return global;
+	return overlayConfig(global, await readConfigIn(join(cwd, CONFIG_DIR_NAME)));
+}
+
+function memRoot(cwd: string, config: Config): string {
+	return resolve(cwd, config.memDir);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Moves a pre-rename records/ directory to mem/, once. Only the default layout is touched: an explicit
+ * memDir is the user's own choice, and an existing mem/ is never merged into. On failure the records
+ * stay where they are and the warning says so, because silently starting a second directory would
+ * strand every earlier record.
+ */
+async function migrateLegacyMemDir(ctx: ExtensionContext, config: Config): Promise<void> {
+	if (config.memDir !== DEFAULT_CONFIG.memDir) return;
+	const target = memRoot(ctx.cwd, config);
+	const legacy = resolve(ctx.cwd, LEGACY_MEM_DIR);
+	if (target === legacy || !(await pathExists(legacy))) return;
+	const warn = (text: string) => {
+		if (ctx.hasUI) ctx.ui.notify(text, "warning");
+	};
+	if (await pathExists(target)) {
+		warn(`Both ${LEGACY_MEM_DIR}/ and ${config.memDir}/ exist; using ${config.memDir}/ and leaving ${LEGACY_MEM_DIR}/ untouched.`);
+		return;
+	}
+	try {
+		await rename(legacy, target);
+		if (ctx.hasUI) ctx.ui.notify(`Renamed ${LEGACY_MEM_DIR}/ to ${config.memDir}/.`, "info");
+	} catch (error) {
+		warn(`Could not rename ${LEGACY_MEM_DIR}/ to ${config.memDir}/, so earlier records are not visible: ${errorMessage(error)}`);
+	}
 }
 
 function activeTools(pi: ExtensionAPI): Tool[] {
@@ -216,7 +260,7 @@ async function generateSummary(
 		throw new Error(
 			maxTokens === undefined
 				? "Summary hit the provider output limit and was truncated"
-				: `Summary was truncated at its ${maxTokens}-token budget; raise or remove summaryMaxTokens in records.json`,
+				: `Summary was truncated at its ${maxTokens}-token budget; raise or remove summaryMaxTokens in mem.json`,
 		);
 	}
 	if (response.stopReason === "error" || response.stopReason === "aborted" || response.stopReason === "toolUse") {
@@ -226,27 +270,6 @@ async function generateSummary(
 	if (!raw) throw new Error("Summary response was empty");
 	const parsed = parseSummary(raw);
 	return { ...parsed, usage: response.usage };
-}
-
-function parseSummary(raw: string): { body: string; metadata: Metadata } {
-	const match = META_RE.exec(raw);
-	const body = (match ? raw.slice(0, match.index) : raw).trim();
-	if (!body) throw new Error("Summary body was empty");
-	let value: unknown;
-	if (match) {
-		try {
-			value = JSON.parse(match[1].trim());
-		} catch {
-			value = undefined;
-		}
-	}
-	const meta = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-	const title = typeof meta.title === "string" && meta.title.trim() ? meta.title.trim() : deriveTitle(body);
-	const summary = typeof meta.summary === "string" && meta.summary.trim() ? meta.summary.trim() : deriveSummary(body);
-	const files = Array.isArray(meta.files)
-		? [...new Set(meta.files.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()))]
-		: [];
-	return { body, metadata: { title, summary, files } };
 }
 
 async function ensureIndex(root: string): Promise<void> {
@@ -439,7 +462,7 @@ async function indexHint(root: string): Promise<string | undefined> {
 	const shown = entries.slice(-INDEX_HINT_ENTRIES);
 	const omitted = entries.length - shown.length;
 	const preamble = omitted > 0 ? `${entries.length} durable work records exist; the ${shown.length} newest are listed below` : `${entries.length} durable work record(s) exist`;
-	return `${preamble}. They hold conclusions from earlier compacted work in this project. Use records_lookup (index, grep, read) to retrieve them: read the earliest record covering a period rather than the latest, because iterative compaction makes newer descriptions of early work more lossy. Before proposing an approach grep 'REJECTED:', before establishing a rule grep 'CONVENTION:', and for surprising behavior grep 'GOTCHA:'.\n\n${shown.join("\n")}`;
+	return `${preamble}. They hold conclusions from earlier compacted work in this project. Use mem (index, grep, read) to retrieve them: read the earliest record covering a period rather than the latest, because iterative compaction makes newer descriptions of early work more lossy. Before proposing an approach grep 'REJECTED:', before establishing a rule grep 'CONVENTION:', and for surprising behavior grep 'GOTCHA:'.\n\n${shown.join("\n")}`;
 }
 
 async function safeReadRecord(root: string, path: string): Promise<string> {
@@ -451,11 +474,11 @@ async function safeReadRecord(root: string, path: string): Promise<string> {
 	if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Record path must name a regular file");
 	const targetReal = await realpath(absolute);
 	const rel = relative(rootReal, targetReal);
-	if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(dirname(targetReal), ".") === targetReal) throw new Error("Record path escapes the records directory");
+	if (rel === ".." || rel.startsWith(`..${sep}`) || resolve(dirname(targetReal), ".") === targetReal) throw new Error("Record path escapes the memory directory");
 	return readFile(targetReal, "utf8");
 }
 
-export default function recordsExtension(pi: ExtensionAPI): void {
+export default function memExtension(pi: ExtensionAPI): void {
 	let indexAnnounced = false;
 	let offering = false;
 	let sawRejection = false;
@@ -470,7 +493,7 @@ export default function recordsExtension(pi: ExtensionAPI): void {
 		const config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
 		// Below the entry point with nothing declined yet there is no offer to make, so skip the log read.
 		if (!sawRejection && tokens < config.askAtTokens) return;
-		const root = recordRoot(ctx.cwd, config);
+		const root = memRoot(ctx.cwd, config);
 		const session = ctx.sessionManager.getSessionId();
 		const rejectedAt = await activeRejection(root, session);
 		if (!shouldAsk(tokens, rejectedAt, config.askAtTokens, config.askEveryTokens, false)) return;
@@ -499,14 +522,16 @@ export default function recordsExtension(pi: ExtensionAPI): void {
 		if (indexAnnounced) return;
 		indexAnnounced = true;
 		const config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
-		const hint = await indexHint(recordRoot(ctx.cwd, config));
+		// Runs before any other handler can touch the directory, since the agent must start before it compacts.
+		await migrateLegacyMemDir(ctx, config);
+		const hint = await indexHint(memRoot(ctx.cwd, config));
 		if (!hint) return;
-		return { message: { customType: "records-index", content: hint, display: false } };
+		return { message: { customType: "mem-index", content: hint, display: false } };
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		const config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
-		const root = recordRoot(ctx.cwd, config);
+		const root = memRoot(ctx.cwd, config);
 		const session = ctx.sessionManager.getSessionId();
 		const numbers = contextNumbers(ctx, event.preparation.tokensBefore);
 
@@ -598,11 +623,11 @@ export default function recordsExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.registerCommand("records-smoke", {
+	pi.registerCommand("mem-smoke", {
 		description: "Generate and write a record without compacting context",
 		handler: async (_args, ctx) => {
 			const config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
-			const root = recordRoot(ctx.cwd, config);
+			const root = memRoot(ctx.cwd, config);
 			const session = ctx.sessionManager.getSessionId();
 			const usage = ctx.getContextUsage();
 			const numbers = contextNumbers(ctx, usage?.tokens ?? 0);
@@ -629,24 +654,24 @@ export default function recordsExtension(pi: ExtensionAPI): void {
 			} catch (error) {
 				const message = errorMessage(error);
 				await logDecision(root, { session, reason: "manual-smoke", action: "failed", ...numbers, summarySource: "agent-live-context", recordWritten: false, error: message });
-				ctx.ui.notify(`Records smoke test failed: ${message}`, "error");
+				ctx.ui.notify(`Memory smoke test failed: ${message}`, "error");
 			}
 		},
 	});
 
 	pi.registerTool({
-		name: "records_lookup",
-		label: "Records Lookup",
+		name: "mem",
+		label: "Memory",
 		description:
-			"Retrieve durable compaction records. Actions: index reads INDEX.md; grep matches a regex against every record and returns matches oldest-first (ripgrep syntax, falling back to JavaScript regex for patterns ripgrep rejects, such as lookaround); read reads one record path relative to the records directory. Read the earliest record covering a period, not the latest, because iterative compaction makes newer descriptions of early work more lossy. Before proposing an approach grep 'REJECTED:', before establishing a rule grep 'CONVENTION:', and for surprising behavior grep 'GOTCHA:'.",
+			"Search this project's durable memory: records written from earlier compacted conversations. Actions: index reads INDEX.md; grep matches a regex against every record and returns matches oldest-first (ripgrep syntax, falling back to JavaScript regex for patterns ripgrep rejects, such as lookaround); read reads one record path relative to the memory directory. Read the earliest record covering a period, not the latest, because iterative compaction makes newer descriptions of early work more lossy. Before proposing an approach grep 'REJECTED:', before establishing a rule grep 'CONVENTION:', and for surprising behavior grep 'GOTCHA:'.",
 		parameters: Type.Object({
 			action: StringEnum(["index", "grep", "read"] as const),
 			query: Type.Optional(Type.String({ description: "JavaScript regular expression for grep" })),
-			path: Type.Optional(Type.String({ description: "Record path relative to the records directory for read" })),
+			path: Type.Optional(Type.String({ description: "Record path relative to the memory directory for read" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const config = await loadConfig(ctx.cwd, ctx.isProjectTrusted());
-			const root = recordRoot(ctx.cwd, config);
+			const root = memRoot(ctx.cwd, config);
 			let text: string;
 			if (params.action === "index") {
 				try {
@@ -664,7 +689,7 @@ export default function recordsExtension(pi: ExtensionAPI): void {
 			}
 			const truncated = truncateHead(text);
 			return {
-				content: [{ type: "text", text: truncated.content + (truncated.truncated ? "\n[Records output truncated at 50KB/2000 lines.]" : "") }],
+				content: [{ type: "text", text: truncated.content + (truncated.truncated ? "\n[Memory output truncated at 50KB/2000 lines.]" : "") }],
 				details: { action: params.action, truncated: truncated.truncated },
 			};
 		},

@@ -2,12 +2,11 @@
 
 An unofficial extension for the [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 that turns context compaction into a durable, greppable artifact. Instead of letting a summary vanish
-into the session, every compaction writes a Markdown record under the project's `records/YYYY/MM/DD/`
-and appends a line to `records/INDEX.md`, which the agent is told about at the start of each run. The
+into the session, every compaction writes a Markdown record under the project's `mem/YYYY/MM/DD/`
+and appends a line to `mem/INDEX.md`, which the agent is told about at the start of each run. The
 agent can then grep its own past work rather than rediscovering it.
 
-> The repository is named `pi-mem` for what it is *for*; the code, the config file, and the record
-> directory all say `records` for what it *stores*. Same thing.
+> The store is `mem/`; one entry in it is a *record*. The agent reaches it through a tool named `mem`.
 
 It also drives *when* compaction happens, because pi's own trigger fires only once the window is
 nearly full:
@@ -58,17 +57,17 @@ Two things do not travel in the clone:
 - `tsconfig.json` — its `paths` must point at wherever pi is installed on this machine, so
   `install.sh` generates it from `tsconfig.template.json`. Re-run `install.sh` after moving or
   reinstalling pi.
-- `records.json` — configuration lives in the agent directory, not here. `install.sh` seeds it from
-  `records.example.json` and never overwrites an existing one.
+- `mem.json` — configuration lives in the agent directory, not here. `install.sh` seeds it from
+  `mem.example.json` and never overwrites an existing one.
 
 ## Configuration
 
-Defaults are overlaid in three layers: built-in defaults, then `<agent-dir>/records.json`, then
-`<cwd>/.pi/records.json` for trusted projects only.
+Defaults are overlaid in three layers: built-in defaults, then `<agent-dir>/mem.json`, then
+`<cwd>/.pi/mem.json` for trusted projects only.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `recordDir` | `records` | Record directory, resolved against the project cwd |
+| `memDir` | `mem` | Memory directory, resolved against the project cwd |
 | `confirmThreshold` | `true` | Ask before compacting; `false` compacts silently |
 | `askAtTokens` | `200000` | Context size at which compaction is first offered |
 | `askEveryTokens` | `100000` | Context growth required after a decline before offering again |
@@ -76,10 +75,21 @@ Defaults are overlaid in three layers: built-in defaults, then `<agent-dir>/reco
 | `forceHeadroomTokens` | unset | Headroom at which asking stops. Unset means half of `reserveTokens` |
 | `agentSelfSummary` | `true` | Let the agent write its own record rather than using pi's summary |
 
-The shipped `records.example.json` writes `askAtTokens` and `askEveryTokens` explicitly even though
+The shipped `mem.example.json` writes `askAtTokens` and `askEveryTokens` explicitly even though
 they match the defaults, so that changing a default later cannot silently change an existing policy.
 
-Records are per-project, under each project's own cwd — nothing needs migrating between machines.
+Memory is per-project, under each project's own cwd — nothing needs migrating between machines.
+
+## Upgrading from the `records` layout
+
+Earlier versions called all of this `records`. Nothing needs to be moved by hand:
+
+- `records/` is renamed to `mem/` on the next session start, per project. If `mem/` already exists,
+  neither directory is touched and a warning says which one is in use. An explicit `memDir` is never
+  overridden.
+- `records.json` is still read if `mem.json` is absent, and `recordDir` is still accepted as a key.
+  `install.sh` renames the agent-level file for tidiness.
+- Records carrying the old `RECORD_META` trailer still parse; new ones write `MEM_META`.
 
 ## Related pi settings
 
