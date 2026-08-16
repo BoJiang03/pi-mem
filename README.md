@@ -86,6 +86,10 @@ Memory is per-project, under each project's own cwd — nothing needs migrating 
 pi keeps verbatim, and `compaction.reserveTokens` (default 16384, flat regardless of window size)
 sets pi's own trigger point and therefore this extension's force floor. Neither is managed here.
 
+Pi passes `reserveTokens` to the compaction event but exposes it nowhere else, so the scheduler reads
+it back out of `settings.json` directly. That is the one place this extension depends on pi's
+on-disk settings format rather than its API.
+
 ## Development
 
 ```sh

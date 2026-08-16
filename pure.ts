@@ -141,6 +141,19 @@ export function forceHeadroom(reserveTokens: number, override: number | undefine
 	return override ?? Math.floor(Math.max(reserveTokens, 0) / 2);
 }
 
+/** Pi's own default when settings.json says nothing (settings-manager.js: reserveTokens ?? 16384). */
+export const PI_DEFAULT_RESERVE_TOKENS = 16384;
+
+/**
+ * Pi hands the reserve to the compaction event but exposes it nowhere else, so the scheduler has to
+ * read it back out of pi's settings file to know where the force floor sits.
+ */
+export function piReserveTokens(settings: unknown): number {
+	const compaction = (settings as { compaction?: unknown } | null | undefined)?.compaction;
+	const value = (compaction as { reserveTokens?: unknown } | null | undefined)?.reserveTokens;
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : PI_DEFAULT_RESERVE_TOKENS;
+}
+
 /**
  * Before any rejection the first ask waits for the cadence entry point, except at pi's own threshold,
  * which is late enough to be worth an ask on any window — including one too small to ever reach the

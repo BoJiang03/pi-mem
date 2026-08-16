@@ -13,6 +13,8 @@ import {
 	nextSequence,
 	parseRipgrepHits,
 	parseSummary,
+	PI_DEFAULT_RESERVE_TOKENS,
+	piReserveTokens,
 	shouldAsk,
 	slugifyTitle,
 	sortGrepHits,
@@ -92,6 +94,15 @@ test("summary budget stays uncapped unless the provider default would not fit", 
 	assert.equal(summaryTokenBudget(undefined, 272_000, 128_000, 271_000), 2_048);
 	assert.equal(summaryTokenBudget(undefined, 0, 128_000, 10_000), undefined);
 	assert.equal(summaryTokenBudget(8_192, 272_000, 128_000, 10_000), 8_192);
+});
+
+test("pi's reserve is read back from its settings, with pi's own default as the fallback", () => {
+	assert.equal(piReserveTokens({ compaction: { reserveTokens: 65_536 } }), 65_536);
+	assert.equal(piReserveTokens({ compaction: { keepRecentTokens: 40_000 } }), PI_DEFAULT_RESERVE_TOKENS, "an unrelated compaction key");
+	assert.equal(piReserveTokens({}), PI_DEFAULT_RESERVE_TOKENS, "no compaction section");
+	assert.equal(piReserveTokens(undefined), PI_DEFAULT_RESERVE_TOKENS, "settings.json missing or unreadable");
+	assert.equal(piReserveTokens({ compaction: { reserveTokens: "big" } }), PI_DEFAULT_RESERVE_TOKENS, "a non-numeric value");
+	assert.equal(piReserveTokens({ compaction: null }), PI_DEFAULT_RESERVE_TOKENS);
 });
 
 test("compaction is forced once headroom reaches the floor", () => {

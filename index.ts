@@ -25,8 +25,9 @@ import {
 	isForcedCompaction,
 	isSafeRecordPath,
 	nextSequence,
-	parseSummary,
 	parseRipgrepHits,
+	parseSummary,
+	piReserveTokens,
 	shouldAsk,
 	slugifyTitle,
 	sortGrepHits,
@@ -152,7 +153,6 @@ async function loadConfig(cwd: string, trusted: boolean): Promise<Config> {
 function memRoot(cwd: string, config: Config): string {
 	return resolve(cwd, config.memDir);
 }
-
 
 function activeTools(pi: ExtensionAPI): Tool[] {
 	const names = new Set(pi.getActiveTools());
@@ -453,15 +453,25 @@ export default function memExtension(pi: ExtensionAPI): void {
 		offering = true;
 		try {
 			const numbers = contextNumbers(ctx, tokens);
+			// A settle can land inside the force zone before pi ever re-evaluates its own threshold, which
+			// it only does per request. Asking here would let a "no" be overridden one request later, so
+			// the floor has to be checked on this path too rather than only in the compaction handler.
+			const floor = forceHeadroom(piReserveTokens(await readConfigFile(join(getAgentDir(), "settings.json"))), config.forceHeadroomTokens);
+			const forced = isForcedCompaction(numbers.window, tokens, floor);
 			if (config.confirmThreshold && ctx.hasUI) {
-				const accepted = await ctx.ui.confirm(
-					"Compact context and write a record?",
-					`${tokens.toLocaleString()} tokens (${numbers.percent.toFixed(1)}% of the context window)`,
-				);
-				if (!accepted) {
-					sawRejection = true;
-					await logDecision(root, { session, reason: "schedule", action: "rejected", ...numbers, summarySource: "none", recordWritten: false });
-					return;
+				if (forced) {
+					const detail = numbers.window > 0 ? `${(numbers.window - tokens).toLocaleString()} tokens of headroom left` : "context window size is unknown";
+					ctx.ui.notify(`Compacting without asking: ${detail}.`, "warning");
+				} else {
+					const accepted = await ctx.ui.confirm(
+						"Compact context and write a record?",
+						`${tokens.toLocaleString()} tokens (${numbers.percent.toFixed(1)}% of the context window)`,
+					);
+					if (!accepted) {
+						sawRejection = true;
+						await logDecision(root, { session, reason: "schedule", action: "rejected", ...numbers, summarySource: "none", recordWritten: false });
+						return;
+					}
 				}
 			}
 			ctx.compact();
